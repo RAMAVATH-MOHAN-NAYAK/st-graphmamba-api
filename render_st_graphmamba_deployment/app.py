@@ -171,6 +171,64 @@ def predict_latest():
         "sensor_ids": sensor_ids,
     })
     return result
+@app.get("/validate")
+def validate(start_row: int = 30000):
+    if speed is None:
+        raise HTTPException(
+            status_code=503,
+            detail="METR-LA dataset not loaded."
+        )
+
+    if start_row < 0 or start_row + 36 > len(speed):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid start_row. Need 24 history rows + 12 future rows."
+        )
+
+    history = speed[start_row:start_row + 24]
+
+    result = run_prediction(
+        history,
+        start_row
+    )
+
+    actual = speed[start_row + 24:start_row + 36]
+
+    predicted = np.asarray(
+        result["predictions_mph"],
+        dtype=np.float32
+    )
+
+    mae = np.mean(
+        np.abs(predicted - actual)
+    )
+
+    rmse = np.sqrt(
+        np.mean((predicted - actual) ** 2)
+    )
+
+    negative_count = int(
+        np.sum(predicted < 0)
+    )
+
+    return {
+        "start_row": start_row,
+        "history_rows": [
+            start_row,
+            start_row + 23
+        ],
+        "future_rows": [
+            start_row + 24,
+            start_row + 35
+        ],
+        "mae_mph": float(mae),
+        "rmse_mph": float(rmse),
+        "negative_predictions": negative_count,
+        "prediction_min": float(predicted.min()),
+        "prediction_max": float(predicted.max()),
+        "actual_min": float(actual.min()),
+        "actual_max": float(actual.max()),
+    }
 
 @app.post("/predict/file")
 async def predict_file(file: UploadFile = File(...)):
