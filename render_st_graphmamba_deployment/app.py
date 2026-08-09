@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from huggingface_hub import hf_hub_download
 
@@ -36,6 +37,13 @@ DATASET_PATH = BASE_DIR / DATASET_FILENAME
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 app = FastAPI(title="ST-GraphMamba METR-LA Inference API", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 model = None
 adj_bias = None
@@ -108,12 +116,14 @@ def root():
 @app.get("/health")
 def health():
     return {
+        "status": "ok",
         "model_loaded": model is not None,
         "dataset_loaded": speed is not None,
         "device": str(DEVICE),
         "sensors": 207,
         "history_len": 24,
         "horizon": 12,
+        "dataset_shape": list(speed.shape) if speed is not None else None,
     }
 
 def run_prediction(history: np.ndarray, start_row: int):
