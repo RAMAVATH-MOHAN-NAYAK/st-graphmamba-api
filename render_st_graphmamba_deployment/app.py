@@ -171,64 +171,6 @@ def predict_latest():
         "sensor_ids": sensor_ids,
     })
     return result
-@app.get("/validate")
-def validate(start_row: int = 30000):
-    if speed is None:
-        raise HTTPException(
-            status_code=503,
-            detail="METR-LA dataset not loaded."
-        )
-
-    if start_row < 0 or start_row + 36 > len(speed):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid start_row. Need 24 history rows + 12 future rows."
-        )
-
-    history = speed[start_row:start_row + 24]
-
-    result = run_prediction(
-        history,
-        start_row
-    )
-
-    actual = speed[start_row + 24:start_row + 36]
-
-    predicted = np.asarray(
-        result["predictions_mph"],
-        dtype=np.float32
-    )
-
-    mae = np.mean(
-        np.abs(predicted - actual)
-    )
-
-    rmse = np.sqrt(
-        np.mean((predicted - actual) ** 2)
-    )
-
-    negative_count = int(
-        np.sum(predicted < 0)
-    )
-
-    return {
-        "start_row": start_row,
-        "history_rows": [
-            start_row,
-            start_row + 23
-        ],
-        "future_rows": [
-            start_row + 24,
-            start_row + 35
-        ],
-        "mae_mph": float(mae),
-        "rmse_mph": float(rmse),
-        "negative_predictions": negative_count,
-        "prediction_min": float(predicted.min()),
-        "prediction_max": float(predicted.max()),
-        "actual_min": float(actual.min()),
-        "actual_max": float(actual.max()),
-    }
 
 @app.post("/predict/file")
 async def predict_file(file: UploadFile = File(...)):
@@ -256,3 +198,175 @@ async def predict_file(file: UploadFile = File(...)):
             os.remove(tmp_path)
         except OSError:
             pass
+
+@app.get("/validate")
+def validate(start_row: int = 30000):
+    if speed is None:
+        raise HTTPException(
+            status_code=503,
+            detail="METR-LA dataset not loaded."
+        )
+
+    # We need:
+    # 24 rows for input
+    # 12 rows for ground truth
+    required_rows = 24 + 12
+
+    if start_row < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="start_row must be >= 0."
+        )
+
+    if start_row + required_rows > len(speed):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Not enough data. start_row={start_row}, "
+                f"dataset length={len(speed)}. "
+                f"Need {required_rows} rows."
+            )
+        )
+
+    # -----------------------------------
+    # 1. Get 24 historical observations
+    # -----------------------------------
+    history = speed[
+        start_row:start_row + 24
+    ]
+
+    # -----------------------------------
+    # 2. Run the actual trained model
+    # -----------------------------------
+    result = run_prediction(
+        history,
+        start_row
+    )
+
+    # -----------------------------------
+    # 3. Get the real next 12 observations
+    # -----------------------------------
+    actual = speed[
+        start_row + 24:start_row + 36
+    ]
+
+    # -----------------------------------
+    # 4. Convert prediction to numpy
+    # -----------------------------------
+    predicted = np.asarray(
+        result["predictions_mph"],
+        dtype=np.float32
+    )
+
+    actual = np.asarray(
+        actual,
+        dtype=np.float32
+    )
+
+    # Safety check
+    if predicted.shape != actual.shape:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Shape mismatch: "
+                f"predicted={predicted.shape}, "
+                f"actual={actual.shape}"
+            )
+        )
+
+    # -----------------------------------
+    # 5. Calculate errors
+    # -----------------------------------
+    error = predicted - actual
+
+    mae = float(
+        np.mean(np.abs(error))
+    )
+
+    rmse = float(
+        np.sqrt(np.mean(error ** 2))
+    )
+
+    # -----------------------------------
+    # 6. Negative predictions
+    # -----------------------------------
+    negative_count = int(
+        np.sum(predicted < 0)
+    )
+
+    # -----------------------------------
+    # 7. Count extremely large values
+    # -----------------------------------
+    high_count = int(
+        np.sum(predicted > 100)
+    )
+
+    # -----------------------------------
+    # 8. Find worst sensor
+    # -----------------------------------
+    sensor_mae = np.mean(
+        np.abs(predicted - actual),
+        axis=1
+    )
+
+    worst_sensor_index = int(
+        np.argmax(sensor_mae)
+    )
+
+    worst_sensor_id = (
+        sensor_ids[worst_sensor_index]
+        if sensor_ids is not None
+        else str(worst_sensor_index)
+    )
+
+    return {
+        "status": "validation_complete",
+
+        "start_row": start_row,
+
+        "input_rows": [
+            start_row,
+            start_row + 23
+        ],
+
+        "ground_truth_rows": [
+            start_row + 24,
+            start_row + 35
+        ],
+
+        "prediction_shape": list(predicted.shape),
+
+        "actual_shape": list(actual.shape),
+
+        "mae_mph": mae,
+
+        "rmse_mph": rmse,
+
+        "negative_predictions": negative_count,
+
+        "predictions_over_100_mph": high_count,
+
+        "prediction_min_mph": float(
+            np.min(predicted)
+        ),
+
+        "prediction_max_mph": float(
+            np.max(predicted)
+        ),
+
+        "actual_min_mph": float(
+            np.min(actual)
+        ),
+
+        "actual_max_mph": float(
+            np.max(actual)
+        ),
+
+        "worst_sensor": {
+            "index": worst_sensor_index,
+            "sensor_id": worst_sensor_id,
+            "mae_mph": float(
+                sensor_mae[worst_sensor_index]
+            )
+        }
+    }
